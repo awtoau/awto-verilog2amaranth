@@ -101,6 +101,16 @@ Batch artifacts:
 - `tmp/amber-batch/summary.json`
 - `tmp/amber-batch/results.json`
 
+Generate semantic gap analytics from batch outputs:
+
+```bash
+make amber-gap-report
+```
+
+Gap report artifacts:
+- `tmp/amber-batch/gap-summary.json`
+- `tmp/amber-batch/gap-summary.md`
+
 ## Test Cases
 
 - Amber benchmark profile: `docs/amber-test-case.md`

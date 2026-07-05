@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: build smoke pipeline amber-batch clean
+.PHONY: build smoke pipeline amber-batch amber-gap-report clean
 
 build:
 	$(PYTHON) -m pip wheel . -w dist
@@ -17,6 +17,9 @@ pipeline:
 
 amber-batch:
 	$(PYTHON) scripts/amber_batch_convert.py
+
+amber-gap-report:
+	$(PYTHON) scripts/amber_gap_report.py --batch-root tmp/amber-batch
 
 clean:
 	rm -rf dist tmp/smoke.v tmp/smoke-out tmp/pipeline-out
