@@ -19,6 +19,22 @@ Outputs:
 - `<module>.gaps.jsonl` semantic/construct gaps
 - `<module>.status.json` conversion summary
 
+## Build
+
+```bash
+make build
+```
+
+## Smoke Test
+
+```bash
+make smoke
+```
+
 ## Intent
 
 This package is intended to live in its own repository (`awto-verilog2amaranth`) and be consumed by tools such as `renode2rtl` as a dependency.
+
+## Test Cases
+
+- Amber benchmark profile: `docs/amber-test-case.md`
