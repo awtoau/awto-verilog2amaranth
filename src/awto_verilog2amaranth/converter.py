@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,8 +95,12 @@ def _emit_gap(gaps: list[dict], kind: str, detail: str, source_file: Path) -> No
     )
 
 
+def _py_ident(name: str) -> str:
+    return f"{name}_" if keyword.iskeyword(name) else name
+
+
 def _convert_literal(tok: str, gaps: list[dict], source_file: Path) -> str:
-    m = re.match(r"^(\d+)'([bdhBDH])([0-9a-fA-F_xXzZ]+)$", tok)
+    m = re.match(r"^(\d+)'([bdhBDH])\s*([0-9a-fA-F_xXzZ]+)$", tok)
     if not m:
         return tok
     base = m.group(2).lower()
@@ -192,7 +197,7 @@ def _find_top_level_ternary(expr: str) -> tuple[int, int] | None:
     return None
 
 
-def _convert_concat(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> str | None:
+def _convert_concat(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> str | None:
     candidate = _strip_outer_parens(expr)
     if not _is_wrapped(candidate, "{", "}"):
         return None
@@ -208,10 +213,10 @@ def _convert_concat(expr: str, known_signals: set[str], gaps: list[dict], source
         if m and _is_wrapped("{" + m.group(2).strip() + "}", "{", "}"):
             count = int(m.group(1))
             rep_expr = m.group(2).strip()
-            rep_val = _convert_expr(rep_expr, known_signals, gaps, source_file)
+            rep_val = _convert_expr(rep_expr, signal_map, gaps, source_file)
             values.extend([rep_val] * count)
         else:
-            values.append(_convert_expr(part, known_signals, gaps, source_file))
+            values.append(_convert_expr(part, signal_map, gaps, source_file))
 
     if not values:
         return "0"
@@ -231,7 +236,7 @@ def _find_matching_brace(text: str, start: int) -> int:
     return -1
 
 
-def _replace_concat_segments(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> tuple[str, dict[str, str]]:
+def _replace_concat_segments(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> tuple[str, dict[str, str]]:
     out: list[str] = []
     replacements: dict[str, str] = {}
     i = 0
@@ -248,7 +253,7 @@ def _replace_concat_segments(expr: str, known_signals: set[str], gaps: list[dict
             return ("0", {})
 
         segment = expr[i : end + 1]
-        converted = _convert_concat(segment, known_signals, gaps, source_file)
+        converted = _convert_concat(segment, signal_map, gaps, source_file)
         if converted is None:
             _emit_gap(gaps, "unsupported-expression", f"concatenation unsupported: {segment}", source_file)
             converted = "0"
@@ -261,23 +266,28 @@ def _replace_concat_segments(expr: str, known_signals: set[str], gaps: list[dict
     return ("".join(out), replacements)
 
 
-def _convert_expr(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> str:
+def _convert_expr(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> str:
     expr = _strip_outer_parens(expr)
+    expr = re.sub(r"(\d+)'([bdhBDH])\s+([0-9a-fA-F_xXzZ]+)", r"\1'\2\3", expr)
 
     ternary = _find_top_level_ternary(expr)
     if ternary is not None:
         q_idx, c_idx = ternary
-        cond = _convert_expr(expr[:q_idx], known_signals, gaps, source_file)
-        on_true = _convert_expr(expr[q_idx + 1 : c_idx], known_signals, gaps, source_file)
-        on_false = _convert_expr(expr[c_idx + 1 :], known_signals, gaps, source_file)
+        cond = _convert_expr(expr[:q_idx], signal_map, gaps, source_file)
+        on_true = _convert_expr(expr[q_idx + 1 : c_idx], signal_map, gaps, source_file)
+        on_false = _convert_expr(expr[c_idx + 1 :], signal_map, gaps, source_file)
         return f"Mux({cond}, {on_true}, {on_false})"
 
-    concat = _convert_concat(expr, known_signals, gaps, source_file)
+    concat = _convert_concat(expr, signal_map, gaps, source_file)
     if concat is not None:
         return concat
 
-    working, placeholders = _replace_concat_segments(expr, known_signals, gaps, source_file)
+    working, placeholders = _replace_concat_segments(expr, signal_map, gaps, source_file)
     if working == "0" and not placeholders:
+        return "0"
+
+    if "?" in working and ":" in working:
+        _emit_gap(gaps, "unsupported-expression", f"nested ternary unsupported: {expr}", source_file)
         return "0"
 
     working = working.replace("&&", " & ").replace("||", " | ")
@@ -297,8 +307,8 @@ def _convert_expr(expr: str, known_signals: set[str], gaps: list[dict], source_f
             return name
         if name in known_keywords:
             return name + suffix
-        if name in known_signals:
-            return f"self.{name}{suffix}"
+        if name in signal_map:
+            return f"self.{signal_map[name]}{suffix}"
         return name + suffix
 
     working = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\b(\[[^\]]+\])?", _replace_name, working)
@@ -363,6 +373,7 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
         widths[name] = max(widths.get(name, 1), 1)
     known_signals.update(internal_lhs)
     internal_names = sorted(n for n in known_signals if n not in {p.name for p in ports})
+    signal_map = {name: _py_ident(name) for name in known_signals}
 
     lines: list[str] = []
     lines.append("# Auto-generated by awto-verilog2amaranth subset converter.")
@@ -376,23 +387,26 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
         lines.append("        pass")
     else:
         for p in ports:
+            py_name = signal_map[p.name]
             if p.width == 1:
-                lines.append(f"        self.{p.name} = Signal()")
+                lines.append(f"        self.{py_name} = Signal()")
             else:
-                lines.append(f"        self.{p.name} = Signal({p.width})")
+                lines.append(f"        self.{py_name} = Signal({p.width})")
         for name in internal_names:
+            py_name = signal_map[name]
             width = widths.get(name, 1)
             if width == 1:
-                lines.append(f"        self.{name} = Signal()")
+                lines.append(f"        self.{py_name} = Signal()")
             else:
-                lines.append(f"        self.{name} = Signal({width})")
+                lines.append(f"        self.{py_name} = Signal({width})")
 
     lines.append("")
     lines.append("    def elaborate(self, platform):")
     lines.append("        m = Module()")
     for a in assigns:
-        rhs = _convert_expr(a.rhs, known_signals, gaps, verilog_path)
-        lines.append(f"        m.d.comb += self.{a.lhs}.eq({rhs})")
+        lhs = signal_map.get(a.lhs, _py_ident(a.lhs))
+        rhs = _convert_expr(a.rhs, signal_map, gaps, verilog_path)
+        lines.append(f"        m.d.comb += self.{lhs}.eq({rhs})")
     lines.append("        return m")
 
     py_out = out_dir / f"{module_name}.py"
