@@ -344,7 +344,11 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
     raw = verilog_path.read_text(encoding="utf-8")
     text = _strip_comments(raw)
 
-    m = re.search(r"module\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)\s*;(.*)endmodule", text, flags=re.DOTALL)
+    m = re.search(
+        r"module\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:#\s*\(.*?\)\s*)?\((.*?)\)\s*;(.*)endmodule",
+        text,
+        flags=re.DOTALL,
+    )
     if not m:
         raise ValueError(f"Could not parse module in {verilog_path}")
 
