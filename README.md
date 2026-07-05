@@ -6,6 +6,25 @@ Current scope:
 - Subset converter for ANSI-style module ports and continuous assign statements.
 - Explicit gap logging for unsupported semantic constructs.
 
+## Dependencies
+
+Required:
+- Python 3.10+
+- pip
+
+Optional but recommended tools for pipeline mode:
+- iverilog (normalization and lint)
+- verilator (lint)
+- yosys (future semantic pipeline stages)
+
+## Fedora Setup
+
+Install system dependencies on Fedora:
+
+```bash
+sudo dnf install -y python3 python3-pip make iverilog verilator yosys
+```
+
 ## Usage
 
 ```bash
