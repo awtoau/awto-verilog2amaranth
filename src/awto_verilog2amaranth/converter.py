@@ -246,6 +246,32 @@ def _find_top_level_ternary(expr: str) -> tuple[int, int] | None:
     return None
 
 
+def _rewrite_parenthesized_ternary(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> str:
+    changed = True
+    out = expr
+    while changed:
+        changed = False
+        stack: list[int] = []
+        for i, ch in enumerate(out):
+            if ch == "(":
+                stack.append(i)
+            elif ch == ")" and stack:
+                s = stack.pop()
+                inner = out[s + 1 : i]
+                tern = _find_top_level_ternary(inner)
+                if tern is None:
+                    continue
+                q_idx, c_idx = tern
+                cond = _convert_expr(inner[:q_idx], signal_map, gaps, source_file)
+                on_true = _convert_expr(inner[q_idx + 1 : c_idx], signal_map, gaps, source_file)
+                on_false = _convert_expr(inner[c_idx + 1 :], signal_map, gaps, source_file)
+                repl = f"Mux({cond}, {on_true}, {on_false})"
+                out = out[:s] + repl + out[i + 1 :]
+                changed = True
+                break
+    return out
+
+
 def _convert_concat(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> str | None:
     candidate = _strip_outer_parens(expr)
     if not _is_wrapped(candidate, "{", "}"):
@@ -339,6 +365,8 @@ def _convert_expr(expr: str, signal_map: dict[str, str], gaps: list[dict], sourc
         on_true = _convert_expr(expr[q_idx + 1 : c_idx], signal_map, gaps, source_file)
         on_false = _convert_expr(expr[c_idx + 1 :], signal_map, gaps, source_file)
         return f"Mux({cond}, {on_true}, {on_false})"
+
+    expr = _rewrite_parenthesized_ternary(expr, signal_map, gaps, source_file)
 
     concat = _convert_concat(expr, signal_map, gaps, source_file)
     if concat is not None:
