@@ -14,10 +14,33 @@ python3 -m awto_verilog2amaranth.cli \
   --out-dir ./out
 ```
 
+Pipeline mode (normalize then lint, still report gaps if conversion fails):
+
+```bash
+python3 -m awto_verilog2amaranth.cli \
+  --verilog-in path/to/module.v \
+  --out-dir ./out \
+  --normalize \
+  --lint
+```
+
+Strict mode (fail fast on lint errors):
+
+```bash
+python3 -m awto_verilog2amaranth.cli \
+  --verilog-in path/to/module.v \
+  --out-dir ./out \
+  --normalize \
+  --lint \
+  --strict-lint
+```
+
 Outputs:
 - `<module>.py` generated Amaranth module
 - `<module>.gaps.jsonl` semantic/construct gaps
 - `<module>.status.json` conversion summary
+- `<module>.normalized.v` preprocessed source when `--normalize` is used
+- `<module>.iverilog-lint.log` and `<module>.verilator-lint.log` when `--lint` is used
 
 ## Build
 
@@ -29,6 +52,12 @@ make build
 
 ```bash
 make smoke
+```
+
+## Pipeline Test
+
+```bash
+make pipeline
 ```
 
 ## Intent
