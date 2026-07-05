@@ -80,6 +80,19 @@ make smoke
 make pipeline
 ```
 
+## Full Amber Batch
+
+Run conversion across all Verilog files under `freecores/amber/hw`:
+
+```bash
+make amber-batch
+```
+
+Batch artifacts:
+- `tmp/amber_batch_convert.log`
+- `tmp/amber-batch/summary.json`
+- `tmp/amber-batch/results.json`
+
 ## Intent
 
 This package is intended to live in its own repository (`awto-verilog2amaranth`) and be consumed by tools such as `renode2rtl` as a dependency.
