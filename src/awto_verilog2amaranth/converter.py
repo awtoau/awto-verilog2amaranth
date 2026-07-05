@@ -119,6 +119,23 @@ def _convert_literal(tok: str, gaps: list[dict], source_file: Path) -> str:
         return "0"
 
 
+def _convert_unsized_literal(base: str, raw: str, gaps: list[dict], source_file: Path) -> str:
+    clean = raw.replace("_", "")
+    if "x" in clean.lower() or "z" in clean.lower():
+        _emit_gap(gaps, "unsupported-literal", f"x/z literal not supported: '{base}{raw}", source_file)
+        return "0"
+    try:
+        b = base.lower()
+        if b == "b":
+            return str(int(clean, 2))
+        if b == "h":
+            return str(int(clean, 16))
+        return str(int(clean, 10))
+    except ValueError:
+        _emit_gap(gaps, "unsupported-literal", f"literal parse failed: '{base}{raw}", source_file)
+        return "0"
+
+
 def _split_top_level(text: str, sep: str) -> list[str]:
     parts: list[str] = []
     start = 0
@@ -216,7 +233,12 @@ def _convert_concat(expr: str, signal_map: dict[str, str], gaps: list[dict], sou
             rep_val = _convert_expr(rep_expr, signal_map, gaps, source_file)
             values.extend([rep_val] * count)
         else:
-            values.append(_convert_expr(part, signal_map, gaps, source_file))
+            m_rep = re.match(r"^(.*?)\{(.*)\}$", part)
+            if m_rep and m_rep.group(1).strip():
+                _emit_gap(gaps, "unsupported-expression", f"non-constant replication unsupported: {part}", source_file)
+                values.append("0")
+            else:
+                values.append(_convert_expr(part, signal_map, gaps, source_file))
 
     if not values:
         return "0"
@@ -269,6 +291,14 @@ def _replace_concat_segments(expr: str, signal_map: dict[str, str], gaps: list[d
 def _convert_expr(expr: str, signal_map: dict[str, str], gaps: list[dict], source_file: Path) -> str:
     expr = _strip_outer_parens(expr)
     expr = re.sub(r"(\d+)'([bdhBDH])\s+([0-9a-fA-F_xXzZ]+)", r"\1'\2\3", expr)
+    if "`" in expr:
+        _emit_gap(gaps, "unsupported-expression", f"macro token unsupported: {expr}", source_file)
+        expr = re.sub(r"`[A-Za-z_][A-Za-z0-9_]*", "0", expr)
+    expr = re.sub(
+        r"'([bdhBDH])\s*([0-9a-fA-F_xXzZ]+)",
+        lambda m: _convert_unsized_literal(m.group(1), m.group(2), gaps, source_file),
+        expr,
+    )
 
     ternary = _find_top_level_ternary(expr)
     if ternary is not None:
@@ -315,21 +345,15 @@ def _convert_expr(expr: str, signal_map: dict[str, str], gaps: list[dict], sourc
 
     # Map unary reduction operators used in Verilog (e.g. |x, &x, ^x)
     # to Amaranth helpers for common signal operands.
-    working = re.sub(
-        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*\|\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
-        r"(\1).any()",
-        working,
-    )
-    working = re.sub(
-        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*&\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
-        r"(\1).all()",
-        working,
-    )
-    working = re.sub(
-        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*\^\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
-        r"(\1).xor()",
-        working,
-    )
+    value_pat = r"(?:self\.)?[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?"
+
+    def _rewrite_reduction(op: str, method: str, text: str) -> str:
+        pat = re.compile(rf"(^|[(,:=+\-*/%<>!&|~]\s*)\{op}\s*({value_pat})")
+        return pat.sub(lambda m: f"{m.group(1)}({m.group(2)}).{method}()", text)
+
+    working = _rewrite_reduction("|", "any", working)
+    working = _rewrite_reduction("&", "all", working)
+    working = _rewrite_reduction("^", "xor", working)
 
     for key, value in placeholders.items():
         working = working.replace(key, value)
