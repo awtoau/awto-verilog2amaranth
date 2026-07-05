@@ -117,6 +117,37 @@ def _lint(verilog_in: Path, out_dir: Path) -> list[dict]:
             }
         )
 
+    yosys_out = out_dir / f"{verilog_in.stem}.yosys-check.log"
+    if _tool_exists("yosys"):
+        run = _run_command(
+            [
+                "yosys",
+                "-q",
+                "-p",
+                f"read_verilog {verilog_in}; hierarchy -check -auto-top; proc; check",
+            ]
+        )
+        yosys_out.write_text(run["stdout"] + run["stderr"], encoding="utf-8")
+        stages.append(
+            {
+                "stage": "lint",
+                "tool": "yosys",
+                "status": "ok" if run["returncode"] == 0 else "failed",
+                "command": run["command"],
+                "returncode": run["returncode"],
+                "log_file": str(yosys_out),
+            }
+        )
+    else:
+        stages.append(
+            {
+                "stage": "lint",
+                "tool": "yosys",
+                "status": "skipped",
+                "reason": "yosys not found",
+            }
+        )
+
     return stages
 
 

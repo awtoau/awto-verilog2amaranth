@@ -15,7 +15,7 @@ Required:
 Optional but recommended tools for pipeline mode:
 - iverilog (normalization and lint)
 - verilator (lint)
-- yosys (future semantic pipeline stages)
+- yosys (structural check in lint pipeline, and future semantic pipeline stages)
 
 ## Fedora Setup
 
@@ -60,6 +60,7 @@ Outputs:
 - `<module>.status.json` conversion summary
 - `<module>.normalized.v` preprocessed source when `--normalize` is used
 - `<module>.iverilog-lint.log` and `<module>.verilator-lint.log` when `--lint` is used
+- `<module>.yosys-check.log` when `--lint` is used and yosys is installed
 
 ## Build
 
