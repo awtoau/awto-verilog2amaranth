@@ -93,10 +93,6 @@ Batch artifacts:
 - `tmp/amber-batch/summary.json`
 - `tmp/amber-batch/results.json`
 
-## Intent
-
-This package is intended to live in its own repository (`awto-verilog2amaranth`) and be consumed by tools such as `renode2rtl` as a dependency.
-
 ## Test Cases
 
 - Amber benchmark profile: `docs/amber-test-case.md`
