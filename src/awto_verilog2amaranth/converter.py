@@ -26,6 +26,13 @@ class Net:
     width: int
 
 
+@dataclass
+class AlwaysAssign:
+    lhs: str
+    rhs: str
+    domain: str
+
+
 def _strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     text = re.sub(r"//.*", "", text)
@@ -82,6 +89,31 @@ def _parse_internal_nets(body: str) -> list[Net]:
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
                 nets[name] = max(width, nets.get(name, 1))
     return [Net(name=n, width=w) for n, w in sorted(nets.items())]
+
+
+def _parse_trivial_always_assigns(body: str) -> list[AlwaysAssign]:
+    assigns: list[AlwaysAssign] = []
+    patt = re.compile(
+        r"always\s*@\s*\((.*?)\)\s*([A-Za-z_][A-Za-z0-9_]*\s*(?:<=|=)\s*.*?;)",
+        flags=re.DOTALL,
+    )
+
+    for m in patt.finditer(body):
+        sens = (m.group(1) or "").strip()
+        stmt = " ".join((m.group(2) or "").split())
+        am = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:<=|=)\s*(.*);$", stmt)
+        if not am:
+            continue
+
+        lhs = am.group(1)
+        rhs = am.group(2).strip()
+        if not rhs:
+            continue
+
+        domain = "sync" if re.search(r"\b(posedge|negedge)\b", sens) else "comb"
+        assigns.append(AlwaysAssign(lhs=lhs, rhs=rhs, domain=domain))
+
+    return assigns
 
 
 def _emit_gap(gaps: list[dict], kind: str, detail: str, source_file: Path) -> None:
@@ -383,8 +415,10 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
     ports = _parse_ports(port_blob)
     internal_nets = _parse_internal_nets(body)
     assigns = _parse_assigns(body)
+    always_assigns = _parse_trivial_always_assigns(body)
 
-    if re.search(r"\balways\b", body):
+    always_count = len(re.findall(r"\balways\b", body))
+    if always_count > len(always_assigns):
         _emit_gap(gaps, "unsupported-construct", "always blocks unsupported in subset converter", verilog_path)
     if re.search(r"\bgenerate\b", body):
         _emit_gap(gaps, "unsupported-construct", "generate blocks unsupported in subset converter", verilog_path)
@@ -397,6 +431,7 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
 
     known_signals = set(widths.keys())
     internal_lhs = sorted({a.lhs for a in assigns if a.lhs not in known_signals})
+    internal_lhs += sorted({a.lhs for a in always_assigns if a.lhs not in known_signals and a.lhs not in internal_lhs})
     for name in internal_lhs:
         widths[name] = max(widths.get(name, 1), 1)
     known_signals.update(internal_lhs)
@@ -435,6 +470,10 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
         lhs = signal_map.get(a.lhs, _py_ident(a.lhs))
         rhs = _convert_expr(a.rhs, signal_map, gaps, verilog_path)
         lines.append(f"        m.d.comb += self.{lhs}.eq({rhs})")
+    for a in always_assigns:
+        lhs = signal_map.get(a.lhs, _py_ident(a.lhs))
+        rhs = _convert_expr(a.rhs, signal_map, gaps, verilog_path)
+        lines.append(f"        m.d.{a.domain} += self.{lhs}.eq({rhs})")
     lines.append("        return m")
 
     py_out = out_dir / f"{module_name}.py"
