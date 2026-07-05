@@ -114,37 +114,217 @@ def _convert_literal(tok: str, gaps: list[dict], source_file: Path) -> str:
         return "0"
 
 
-def _convert_expr(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> str:
-    if "{" in expr or "}" in expr:
-        _emit_gap(gaps, "unsupported-expression", f"concatenation unsupported: {expr}", source_file)
-        return "0"
-    if "?" in expr and ":" in expr:
-        _emit_gap(gaps, "unsupported-expression", f"ternary unsupported: {expr}", source_file)
+def _split_top_level(text: str, sep: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    paren = 0
+    brace = 0
+    bracket = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            paren += 1
+        elif ch == ")":
+            paren = max(paren - 1, 0)
+        elif ch == "{":
+            brace += 1
+        elif ch == "}":
+            brace = max(brace - 1, 0)
+        elif ch == "[":
+            bracket += 1
+        elif ch == "]":
+            bracket = max(bracket - 1, 0)
+        elif ch == sep and paren == 0 and brace == 0 and bracket == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _is_wrapped(expr: str, open_ch: str, close_ch: str) -> bool:
+    if len(expr) < 2 or expr[0] != open_ch or expr[-1] != close_ch:
+        return False
+    depth = 0
+    for i, ch in enumerate(expr):
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0 and i != len(expr) - 1:
+                return False
+    return depth == 0
+
+
+def _strip_outer_parens(expr: str) -> str:
+    out = expr.strip()
+    while _is_wrapped(out, "(", ")"):
+        out = out[1:-1].strip()
+    return out
+
+
+def _find_top_level_ternary(expr: str) -> tuple[int, int] | None:
+    paren = 0
+    brace = 0
+    bracket = 0
+    ternary_depth = 0
+    q_idx = -1
+    for i, ch in enumerate(expr):
+        if ch == "(":
+            paren += 1
+        elif ch == ")":
+            paren = max(paren - 1, 0)
+        elif ch == "{":
+            brace += 1
+        elif ch == "}":
+            brace = max(brace - 1, 0)
+        elif ch == "[":
+            bracket += 1
+        elif ch == "]":
+            bracket = max(bracket - 1, 0)
+        elif paren == 0 and brace == 0 and bracket == 0:
+            if ch == "?":
+                if ternary_depth == 0:
+                    q_idx = i
+                ternary_depth += 1
+            elif ch == ":" and ternary_depth > 0:
+                ternary_depth -= 1
+                if ternary_depth == 0 and q_idx >= 0:
+                    return (q_idx, i)
+    return None
+
+
+def _convert_concat(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> str | None:
+    candidate = _strip_outer_parens(expr)
+    if not _is_wrapped(candidate, "{", "}"):
+        return None
+
+    inner = candidate[1:-1].strip()
+    if not inner:
         return "0"
 
-    token_re = re.compile(
-        r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?|\d+'[bdhBDH][0-9a-fA-F_xXzZ]+|\d+|==|!=|<=|>=|&&|\|\||<<|>>|[-+*/%&|^~()<>!]"
-    )
-    converted: list[str] = []
-    for tok in token_re.findall(expr):
-        if re.match(r"^[A-Za-z_]", tok):
-            base = tok.split("[", 1)[0]
-            if base in known_signals:
-                suffix = tok[len(base) :]
-                converted.append(f"self.{base}{suffix}")
-            else:
-                converted.append(tok)
-        elif "'" in tok:
-            converted.append(_convert_literal(tok, gaps, source_file))
+    parts = _split_top_level(inner, ",")
+    values: list[str] = []
+    for part in parts:
+        m = re.match(r"^(\d+)\s*\{(.*)\}$", part)
+        if m and _is_wrapped("{" + m.group(2).strip() + "}", "{", "}"):
+            count = int(m.group(1))
+            rep_expr = m.group(2).strip()
+            rep_val = _convert_expr(rep_expr, known_signals, gaps, source_file)
+            values.extend([rep_val] * count)
         else:
-            if tok == "&&":
-                tok = "&"
-            elif tok == "||":
-                tok = "|"
-            elif tok == "!":
-                tok = "~"
-            converted.append(tok)
-    return " ".join(converted) if converted else "0"
+            values.append(_convert_expr(part, known_signals, gaps, source_file))
+
+    if not values:
+        return "0"
+    return f"Cat({', '.join(reversed(values))})"
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _replace_concat_segments(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> tuple[str, dict[str, str]]:
+    out: list[str] = []
+    replacements: dict[str, str] = {}
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch != "{":
+            out.append(ch)
+            i += 1
+            continue
+
+        end = _find_matching_brace(expr, i)
+        if end < 0:
+            _emit_gap(gaps, "unsupported-expression", f"unbalanced braces: {expr}", source_file)
+            return ("0", {})
+
+        segment = expr[i : end + 1]
+        converted = _convert_concat(segment, known_signals, gaps, source_file)
+        if converted is None:
+            _emit_gap(gaps, "unsupported-expression", f"concatenation unsupported: {segment}", source_file)
+            converted = "0"
+
+        key = f"__CAT{len(replacements)}__"
+        replacements[key] = converted
+        out.append(key)
+        i = end + 1
+
+    return ("".join(out), replacements)
+
+
+def _convert_expr(expr: str, known_signals: set[str], gaps: list[dict], source_file: Path) -> str:
+    expr = _strip_outer_parens(expr)
+
+    ternary = _find_top_level_ternary(expr)
+    if ternary is not None:
+        q_idx, c_idx = ternary
+        cond = _convert_expr(expr[:q_idx], known_signals, gaps, source_file)
+        on_true = _convert_expr(expr[q_idx + 1 : c_idx], known_signals, gaps, source_file)
+        on_false = _convert_expr(expr[c_idx + 1 :], known_signals, gaps, source_file)
+        return f"Mux({cond}, {on_true}, {on_false})"
+
+    concat = _convert_concat(expr, known_signals, gaps, source_file)
+    if concat is not None:
+        return concat
+
+    working, placeholders = _replace_concat_segments(expr, known_signals, gaps, source_file)
+    if working == "0" and not placeholders:
+        return "0"
+
+    working = working.replace("&&", " & ").replace("||", " | ")
+    working = re.sub(r"!(?!=)", "~", working)
+    working = re.sub(
+        r"\d+'[bdhBDH][0-9a-fA-F_xXzZ]+",
+        lambda m: _convert_literal(m.group(0), gaps, source_file),
+        working,
+    )
+
+    known_keywords = {"Cat", "Mux", "Const", "self"}
+
+    def _replace_name(m: re.Match) -> str:
+        name = m.group(1)
+        suffix = m.group(2) or ""
+        if name.startswith("__CAT"):
+            return name
+        if name in known_keywords:
+            return name + suffix
+        if name in known_signals:
+            return f"self.{name}{suffix}"
+        return name + suffix
+
+    working = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)\b(\[[^\]]+\])?", _replace_name, working)
+
+    # Map unary reduction operators used in Verilog (e.g. |x, &x, ^x)
+    # to Amaranth helpers for common signal operands.
+    working = re.sub(
+        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*\|\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
+        r"(\1).any()",
+        working,
+    )
+    working = re.sub(
+        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*&\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
+        r"(\1).all()",
+        working,
+    )
+    working = re.sub(
+        r"(?:(?<=^)|(?<=[(,:=+\-*/%<>!]))\s*\^\s*(self\.[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]+\])?)",
+        r"(\1).xor()",
+        working,
+    )
+
+    for key, value in placeholders.items():
+        working = working.replace(key, value)
+
+    return " ".join(working.split()) if working.strip() else "0"
 
 
 def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
@@ -187,12 +367,12 @@ def convert_verilog_to_amaranth(verilog_path: Path, out_dir: Path) -> dict:
     lines: list[str] = []
     lines.append("# Auto-generated by awto-verilog2amaranth subset converter.")
     lines.append("# Supported: ANSI-style port declarations and continuous assign statements.")
-    lines.append("from amaranth import Elaboratable, Module, Signal")
+    lines.append("from amaranth import Cat, Elaboratable, Module, Mux, Signal")
     lines.append("")
     lines.append(f"class {module_name.capitalize()}(Elaboratable):")
     lines.append("    def __init__(self):")
 
-    if not ports and not internal_lhs:
+    if not ports and not internal_names:
         lines.append("        pass")
     else:
         for p in ports:
