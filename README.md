@@ -88,6 +88,14 @@ Run conversion across all Verilog files under `freecores/amber/hw`:
 make amber-batch
 ```
 
+Run against the module-only profile generated in `awtoau/amber`:
+
+```bash
+python3 scripts/amber_batch_convert.py \
+  --amber-root /mnt/2tb/git/awtoaa/amber \
+  --filelist /mnt/2tb/git/awtoaa/amber/tools/conversion/module_filelist.txt
+```
+
 Batch artifacts:
 - `tmp/amber_batch_convert.log`
 - `tmp/amber-batch/summary.json`

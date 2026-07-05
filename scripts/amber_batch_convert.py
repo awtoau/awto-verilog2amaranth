@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import argparse
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -90,9 +91,27 @@ def run_file(repo_root: Path, verilog_file: Path, amber_root: Path, out_root: Pa
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Batch convert Amber Verilog files")
+    parser.add_argument(
+        "--amber-root",
+        default="/mnt/2tb/git_mirror/freecores/amber",
+        help="Path to Amber repository root",
+    )
+    parser.add_argument(
+        "--source-glob",
+        default="hw/**/*.v",
+        help="Glob used when --filelist is not provided",
+    )
+    parser.add_argument(
+        "--filelist",
+        default="",
+        help="Optional newline-delimited file list (paths relative to amber root)",
+    )
+    args = parser.parse_args()
+
     repo_root = Path(__file__).resolve().parents[1]
-    amber_root = Path("/mnt/2tb/git_mirror/freecores/amber")
-    source_glob = "hw/**/*.v"
+    amber_root = Path(args.amber_root).resolve()
+    source_glob = args.source_glob
 
     out_root = repo_root / "tmp" / "amber-batch"
     out_root.mkdir(parents=True, exist_ok=True)
@@ -104,7 +123,17 @@ def main() -> int:
     write_log(log_path, f"amber_root={amber_root}")
     write_log(log_path, f"source_glob={source_glob}")
 
-    verilog_files = sorted(amber_root.glob(source_glob))
+    if args.filelist:
+        filelist_path = Path(args.filelist).resolve()
+        write_log(log_path, f"filelist={filelist_path}")
+        rel_paths = [
+            line.strip()
+            for line in filelist_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        verilog_files = [amber_root / rel for rel in rel_paths]
+    else:
+        verilog_files = sorted(amber_root.glob(source_glob))
     results: list[dict] = []
 
     for vf in verilog_files:
